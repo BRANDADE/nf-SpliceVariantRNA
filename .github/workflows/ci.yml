@@ -44,3 +44,12 @@ jobs:
           test -s results_test/irfinder/samplesheet/matrices/samplesheet.irfinder.IRratio.tsv
           test -s results_test/splicelauncher/samplesheet/filtered/samples/S1/S1.recap.tsv
           test -s results_test/splicelauncher/samplesheet/filtered/samples/S1/S1.sashimi/aberrant/chr1_300_1000_GENE1.pdf
+
+      - name: Mock run, IRFinder en mode fastq
+        run: |
+          rm -rf results_test
+          PATH="$PWD/tests/mocks/bin:$PATH" nextflow run main.nf -profile test \
+              --splicelauncher tests/mocks/SpliceLauncher/SpliceLauncher.sh \
+              --irfinder_mode fastq --irfinder_ref tests/data/irfinder_ref
+          test -s results_test/irfinder/samples/lib1/S1/IRFinder-IR-nondir.txt
+          test ! -e results_test/irfinder/samples/lib1/S1/Unsorted.bam

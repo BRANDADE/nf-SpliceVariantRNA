@@ -8,10 +8,11 @@ FASTQ ─► FastQC (brut) ─► fastp ─► FastQC (trimmé) ─────�
                              └─► SpliceLauncher Align (STAR) ─┬─► SpliceLauncher Count ─► SpliceLauncher Analyse (TSV)
                                                               │     └─► filtre ─┬─► récapitulatif HGVS / échantillon
                                                               │                 └─► sashimi plots / échantillon
-                                                              └─► IRFinder-S BAM ─┬─► matrices intron × échantillon
+                                                              └─► IRFinder-S BAM* ┬─► matrices intron × échantillon
                                                                                   ├─► chaque échantillon vs les autres (DESeq2)
                                                                                   └─► comparaison de conditions (DESeq2)
 ```
+\* ou, avec `--irfinder_mode fastq`, IRFinder-S FastQ sur les FASTQ bruts (voir plus bas).
 
 - **SpliceLauncher** (Leman et al., *Bioinformatics* 2020, doi:10.1093/bioinformatics/btz784) : jonctions
   d'épissage et épissages alternatifs, https://github.com/raphaelleman/SpliceLauncher
@@ -24,12 +25,11 @@ FASTQ ─► FastQC (brut) ─► fastp ─► FastQC (trimmé) ─────�
 - Nextflow ≥ 26.04 (testé avec 26.04.6).
 - Outils sur le cluster (chemins dans `conf/slurm.config`) : fastp, FastQC, MultiQC, STAR, samtools,
   bedtools, SpliceLauncher (avec R et Perl).
-- Singularity/Apptainer pour IRFinder. Le cluster n'ayant pas accès à Docker Hub, on utilise une image
-  `.sif` locale, créée depuis une machine connectée avec
-  `singularity pull irfinder_2.0.1.sif docker://cloxd/irfinder:2.0.1`, et renseignée avec
-  `--irfinder_container /chemin/absolu/irfinder_2.0.1.sif`. Seuls les processus IRFinder tournent dans un
-  conteneur, les autres utilisent les outils de l'hôte.
-- Une seconde image `.sif` pour le post-traitement SpliceLauncher (Python + ggsashimi), construite à
+- IRFinder-S 2.0.1. Sur le cluster, le profil `slurm` utilise le module `IRFinder`
+  (`--irfinder_module`), qui tourne dans Apptainer avec `/NFS` monté (`APPTAINER_BIND`). Ailleurs, on
+  peut utiliser une image : `--irfinder_container` (par défaut `cloxd/irfinder:2.0.1`, ou le chemin
+  absolu d'un `.sif`).
+- Une image `.sif` pour le post-traitement (scripts Python de `bin/` et ggsashimi), construite à
   partir de `containers/tools/Dockerfile` (commandes en tête du fichier) et renseignée avec
   `--tools_container /chemin/absolu/splicevariant-tools_1.0.sif`.
 
@@ -92,6 +92,8 @@ binaire.
 | `--average_qual` | 0 | qualité **moyenne** minimale du read (fastp `--average_qual`, 0 = désactivé) |
 | `--min_cov`, `--threshold` | 5, 1 | paramètres de SpliceLauncher |
 | `--skip_irfinder` | false | désactive IRFinder |
+| `--irfinder_mode` | `bam` | `bam` : BAM SpliceLauncher ; `fastq` : réalignement par IRFinder (voir ci-dessous) |
+| `--irfinder_keep_bam` | false | mode `fastq` : conserver le BAM produit par IRFinder |
 | `--irfinder_ir_file` | `nondir` | `dir` pour les librairies orientées (IRFinder détecte l'orientation) |
 | `--irfinder_outlier` | true | analyse un-contre-tous (au moins `--irfinder_outlier_min_samples` = 4 échantillons) |
 | `--irfinder_min_ir` / `--irfinder_warning_level` | 0.05 / 2 | filtres d'`IRFinder Diff` (`-ir`, `-wl`) |
@@ -154,6 +156,29 @@ couvre toute la jonction et non les seuls nucléotides insérés : elle devra ê
 ├── irfinder/<run_id>/conditions/                   IRFinder Diff entre conditions (si colonne condition)
 └── pipeline_info/                                  rapports d'exécution Nextflow
 ```
+
+### IRFinder : mode `bam` ou `fastq`
+
+| | `bam` (défaut) | `fastq` |
+|---|---|---|
+| lectures | BAM SpliceLauncher (après fastp) | FASTQ bruts ; IRFinder coupe l'adaptateur Illumina |
+| alignement | STAR de SpliceLauncher, jusqu'à 10 positions par lecture | STAR d'IRFinder, lectures à alignement unique (`--outFilterMultimapNmax 1`) |
+| référence | construite par le pipeline, ou `--irfinder_ref` | `--irfinder_ref` construite par `IRFinder BuildRef` (avec `STAR/`) |
+| ressources | 2 cœurs, 16 Go | 10 cœurs, 40 Go (partition `fat`) |
+
+Le wiki IRFinder recommande le mode BAM quand les lectures sont déjà alignées avec STAR : toutes les
+analyses reposent alors sur le même alignement. Le mode `fastq` reproduit en revanche le protocole déjà
+utilisé sur le cluster (`IRFinder FastQ`), avec la référence existante :
+
+```bash
+--irfinder_mode fastq --irfinder_ref /NFS/cluster-share/projects/rna/ROSA/IRFinder/IRFinder_ref
+```
+
+Cette référence nomme les chromosomes `1`, `2`… (convention Ensembl). En mode `bam`, les chromosomes de
+la référence doivent porter les mêmes noms que dans les BAM. Sinon, IRFinder n'échoue pas : il produit
+des comptages tous nuls. Le pipeline le détecte et s'arrête.
+
+Comparer les deux modes sur une série déjà analysée est recommandé avant de choisir.
 
 ### Interprétation d'IRFinder
 
