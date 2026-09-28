@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --out1|--out2) echo | gzip > "$2"; shift 2 ;;
+        --json) echo '{}' > "$2"; shift 2 ;;
+        --html) echo '<html/>' > "$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done

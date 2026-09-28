@@ -1,23 +1,26 @@
 process FASTQC {
-    tag "$id ($qc_type)"
+    tag "${meta.id} (${qc_type})"
+    label 'process_low'
 
     input:
-    tuple val(id), val(group_id), path(reads), val(qc_type)
+    tuple val(meta), path(reads), val(qc_type)
 
     output:
-    tuple val(id), val(group_id), path("*_fastqc.html"), path("*_fastqc.zip"), val(qc_type), emit: qc_files
-    path "${id}.${qc_type}.fastqc.out"                                                      , emit: log_out
-    path "${id}.${qc_type}.fastqc.err"                                                      , emit: log_err
+    tuple val(meta), path("*_fastqc.html"), emit: html
+    tuple val(meta), path("*_fastqc.zip") , emit: zip
+    path "${meta.id}.${qc_type}.fastqc.log", emit: log
 
     script:
-    def outdir_abs = file(params.outdir).toAbsolutePath()
     """
-    ${params.fastqc} -t ${task.cpus} ${reads} \\
-        1> ${id}.${qc_type}.fastqc.out \\
-        2> ${id}.${qc_type}.fastqc.err
+    ${params.fastqc} --threads ${task.cpus} ${reads} > ${meta.id}.${qc_type}.fastqc.log 2>&1
+    """
 
-    # Copie directe et robuste avec rsync vers results/qc/fastqc_<raw|trimmed>/<groupe>/
-    mkdir -p ${outdir_abs}/qc/fastqc_${qc_type}/${group_id}
-    rsync -ac *_fastqc.html *_fastqc.zip ${outdir_abs}/qc/fastqc_${qc_type}/${group_id}/
+    stub:
+    """
+    for r in ${reads}; do
+        base=\$(basename "\$r" | sed -E 's/(\\.gz|\\.fastq|\\.fq)+\$//')
+        touch "\${base}_fastqc.html" "\${base}_fastqc.zip"
+    done
+    touch ${meta.id}.${qc_type}.fastqc.log
     """
 }

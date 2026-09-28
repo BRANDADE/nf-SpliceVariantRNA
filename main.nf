@@ -1,185 +1,177 @@
+#!/usr/bin/env nextflow
+/*
+ * nf-SpliceVariantRNA
+ *   FASTQ -> QC (FastQC, fastp) -> alignement STAR (SpliceLauncher) -> jonctions (SpliceLauncher)
+ *                                                                    -> rétention d'intron (IRFinder-S)
+ */
 nextflow.enable.dsl = 2
 
-include { FASTP_TRIMMING }                                                         from './modules/fastp_trimming.nf'
-include { FASTQC as FASTQC_RAW; FASTQC as FASTQC_TRIMMED }                         from './modules/fastqc.nf'
-include { SPLICELAUNCHER_INSTALL; SPLICELAUNCHER_ALIGN; SPLICELAUNCHER_COUNT; SPLICELAUNCHER_ANALYSIS } from './modules/SpliceLauncher.nf'
+include { FASTQC as FASTQC_RAW; FASTQC as FASTQC_TRIMMED }                                    from './modules/fastqc.nf'
+include { FASTP }                                                                               from './modules/fastp.nf'
+include { MULTIQC }                                                                             from './modules/multiqc.nf'
+include { SPLICELAUNCHER_INSTALL; SPLICELAUNCHER_ALIGN; SPLICELAUNCHER_COUNT; SPLICELAUNCHER_ANALYSIS } from './modules/splicelauncher.nf'
+include { IRFINDER }                                                                            from './subworkflows/irfinder.nf'
 
 workflow {
 
     main:
-    // =============================================================
-    // 0. IDENTIFIANT UNIQUE DE RUN
-    // =============================================================
-    def run_date         = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date())
-    def samplesheet_name = file(params.samplesheet).baseName
-    def unique_run_id    = params.run_id ?: "${samplesheet_name}_${run_date}"
+    validateParams()
 
-    println "--> [INFO] Analyse de la série : ${unique_run_id}"
+    // Identifiant de série DÉTERMINISTE : il fait partie des entrées (donc du hash de cache) de
+    // COUNT/ANALYSIS ; un horodatage empêcherait toute reprise avec -resume.
+    def run_id = params.run_id ?: file(params.samplesheet).baseName
+    log.info "--> [INFO] Série : ${run_id}"
 
     // =============================================================
-    // 1. RÉFÉRENCE
+    // 1. ENTRÉES
     // =============================================================
-    def outdir_abs   = file(params.outdir).toAbsolutePath()
-    def ref_dir_path = file("${outdir_abs}/references/${params.genome_name}")
-    def ref_bed      = file("${outdir_abs}/references/${params.genome_name}/BEDannotation.bed")
-    def ref_sjdb     = file("${outdir_abs}/references/${params.genome_name}/SJDBannotation.sjdb")
-    def ref_annot    = file("${outdir_abs}/references/${params.genome_name}/SpliceLauncherAnnot.txt")
+    ch_samples = channel.fromList(parseSamplesheet(params.samplesheet))
 
-    if (ref_bed.exists() && ref_bed.size() > 0 && ref_sjdb.exists() && ref_annot.exists()) {
-        println "--> [SKIP] Référence SpliceLauncher '${params.genome_name}' déjà existante."
-        db_ref_dir   = Channel.value(ref_dir_path)
-        db_ref_bed   = Channel.value(ref_bed)
-        db_ref_sjdb  = Channel.value(ref_sjdb)
-        db_ref_annot = Channel.value(ref_annot)
-    } else {
-        println "--> [RUN]  Installation SpliceLauncher..."
-        gff3_file  = file(params.gff3, checkIfExists: true)
-        mane_file  = file(params.mane, checkIfExists: true)
-        fasta_file = file(params.fasta, checkIfExists: true)
-
-        SPLICELAUNCHER_INSTALL(gff3_file, mane_file, fasta_file, params.genome_name)
-
-        db_ref_dir   = SPLICELAUNCHER_INSTALL.out.ref_dir
-        db_ref_bed   = SPLICELAUNCHER_INSTALL.out.bed
-        db_ref_sjdb  = SPLICELAUNCHER_INSTALL.out.sjdb
-        db_ref_annot = SPLICELAUNCHER_INSTALL.out.annot
+    // =============================================================
+    // 2. RÉFÉRENCE SPLICELAUNCHER (index STAR + annotations)
+    // =============================================================
+    if (params.splicelauncher_ref) {
+        def ref = file(params.splicelauncher_ref, checkIfExists: true)
+        ['BEDannotation.bed', 'SJDBannotation.sjdb', 'SpliceLauncherAnnot.txt', 'STARgenome'].each { f ->
+            if (!ref.resolve(f).exists()) {
+                error "--splicelauncher_ref ${ref} : ${f} introuvable."
+            }
+        }
+        ch_sl_ref = channel.value(ref)
+    }
+    else {
+        SPLICELAUNCHER_INSTALL(
+            file(params.gff3, checkIfExists: true),
+            file(params.mane, checkIfExists: true),
+            file(params.fasta, checkIfExists: true),
+            params.genome_name
+        )
+        ch_sl_ref = SPLICELAUNCHER_INSTALL.out.ref_dir
     }
 
     // =============================================================
-    // 2. INPUT
+    // 3. QC + TRIMMING
     // =============================================================
-    raw_samples_ch = Channel
-        .fromPath(params.samplesheet)
-        .splitCsv(header: true, sep: '\t')
-        .map { row ->
-            tuple(
-                row.id,
-                file(row.path_read1),
-                file(row.path_read2),
-                row.group_id,
-                row.technologie
-            )
-        }
+    FASTQC_RAW(ch_samples.map { meta, reads -> tuple(meta, reads, 'raw') })
+    FASTP(ch_samples)
+    FASTQC_TRIMMED(FASTP.out.reads.map { meta, reads -> tuple(meta, reads, 'trimmed') })
 
     // =============================================================
-    // 3. FASTQC RAW
+    // 4. SPLICELAUNCHER : alignement, comptage, analyse
     // =============================================================
-    raw_samples_ch
-        .branch { id, r1, r2, group, tech ->
-            def base_r1 = r1.name.replaceAll(/(\.gz|\.fastq|\.fq)+$/, '')
-            def base_r2 = r2.name.replaceAll(/(\.gz|\.fastq|\.fq)+$/, '')
-            def out_zip1 = file("${outdir_abs}/qc/fastqc_raw/${group}/${base_r1}_fastqc.zip")
-            def out_zip2 = file("${outdir_abs}/qc/fastqc_raw/${group}/${base_r2}_fastqc.zip")
+    SPLICELAUNCHER_ALIGN(FASTP.out.reads, ch_sl_ref)
 
-            already_done: out_zip1.exists() && out_zip1.size() > 0 && out_zip2.exists() && out_zip2.size() > 0
-            to_process:   true
-                return tuple(id, group, [r1, r2], 'raw')
-        }
-        .set { fastqc_raw_branch }
-
-    FASTQC_RAW(fastqc_raw_branch.to_process)
-
-    // =============================================================
-    // 4. FASTP TRIMMING
-    // =============================================================
-    raw_samples_ch
-        .branch { id, r1, r2, group, tech ->
-            def target_r1 = file("${outdir_abs}/fastq_trimmed/${group}/${id}.${params.min_length}bp.1.fastq.gz")
-            def target_r2 = file("${outdir_abs}/fastq_trimmed/${group}/${id}.${params.min_length}bp.2.fastq.gz")
-
-            already_done: target_r1.exists() && target_r1.size() > 0 && target_r2.exists() && target_r2.size() > 0
-                return tuple(id, group, target_r1, target_r2)
-            to_process:   true
-                return tuple(id, r1, r2, group, tech)
-        }
-        .set { fastp_branch }
-
-    FASTP_TRIMMING(fastp_branch.to_process)
-
-    // =============================================================
-    // 5. FASTQC TRIMMED
-    // =============================================================
-    all_trimmed_reads_ch = FASTP_TRIMMING.out.fastp_raw
-        .map { id, group, r1, r2, html, json, out, err -> tuple(id, group, r1, r2) }
-        .mix(fastp_branch.already_done)
-
-    all_trimmed_reads_ch
-        .branch { id, group, r1, r2 ->
-            def base_r1 = r1.name.replaceAll(/(\.gz|\.fastq|\.fq)+$/, '')
-            def base_r2 = r2.name.replaceAll(/(\.gz|\.fastq|\.fq)+$/, '')
-            def out_zip1 = file("${outdir_abs}/qc/fastqc_trimmed/${group}/${base_r1}_fastqc.zip")
-            def out_zip2 = file("${outdir_abs}/qc/fastqc_trimmed/${group}/${base_r2}_fastqc.zip")
-
-            already_done: out_zip1.exists() && out_zip1.size() > 0 && out_zip2.exists() && out_zip2.size() > 0
-            to_process:   true
-                return tuple(id, group, [r1, r2], 'trimmed')
-        }
-        .set { fastqc_trimmed_branch }
-
-    FASTQC_TRIMMED(fastqc_trimmed_branch.to_process)
-
-    // =============================================================
-    // 6. ALIGNEMENT
-    // =============================================================
-    all_trimmed_reads_ch
-        .branch { id, group, r1, r2 ->
-            def target_bam = file("${outdir_abs}/splicelauncher/mapping/${group}/${id}.${params.min_length}bp.Aligned.sortedByCoord.out.bam")
-
-            already_done: target_bam.exists() && target_bam.size() > 0
-                return tuple(id, group, target_bam)
-            to_process:   true
-                return tuple(id, group, [r1, r2])
-        }
-        .set { align_branch }
-
-    SPLICELAUNCHER_ALIGN(align_branch.to_process, db_ref_dir.collect())
-
-    ch_final_bams = SPLICELAUNCHER_ALIGN.out.bam
-        .mix(align_branch.already_done)
-
-    // =============================================================
-    // 7. COUNT
-    // =============================================================
-    all_bams_collected = ch_final_bams
-        .map { id, group, bam -> bam }
-        .collect()
-
-    SPLICELAUNCHER_COUNT(all_bams_collected, db_ref_bed, unique_run_id)
-
-    // =============================================================
-    // 8. ANALYSIS (AVEC CRÉATION DE SampleNames.txt)
-    // =============================================================
-    SPLICELAUNCHER_ANALYSIS(
-        SPLICELAUNCHER_COUNT.out.count_matrix,
-        db_ref_annot
+    SPLICELAUNCHER_COUNT(
+        SPLICELAUNCHER_ALIGN.out.bam.map { _meta, bam, _bai -> bam }.collect(),
+        ch_sl_ref,
+        run_id
     )
+    SPLICELAUNCHER_ANALYSIS(SPLICELAUNCHER_COUNT.out.count_matrix, ch_sl_ref, run_id)
 
+    // =============================================================
+    // 5. IRFINDER : rétention d'intron
+    // =============================================================
+    if (!params.skip_irfinder) {
+        IRFINDER(SPLICELAUNCHER_ALIGN.out.bam, ch_sl_ref, run_id)
+    }
+
+    // =============================================================
+    // 6. MULTIQC
+    // =============================================================
+    if (!params.skip_multiqc) {
+        ch_qc = channel.empty()
+            .mix(FASTQC_RAW.out.zip.map { _meta, f -> f })
+            .mix(FASTQC_TRIMMED.out.zip.map { _meta, f -> f })
+            .mix(FASTP.out.json.map { _meta, f -> f })
+            .mix(SPLICELAUNCHER_ALIGN.out.log_final.map { _meta, f -> f })
+            .flatten()
+            .collect()
+        MULTIQC(ch_qc, run_id)
+    }
 }
 
+// =================================================================
+// Fonctions
+// =================================================================
 
-// output {
-//     pipeline_outputs {
-//         mode 'copy'
-//         overwrite true
+def validateParams() {
+    if (!params.samplesheet) {
+        error "--samplesheet est obligatoire."
+    }
+    if (!params.splicelauncher) {
+        error "--splicelauncher (chemin de SpliceLauncher.sh) est obligatoire."
+    }
+    file(params.splicelauncher, checkIfExists: true)
+    if (!params.splicelauncher_ref && !(params.gff3 && params.mane && params.fasta)) {
+        error "Sans --splicelauncher_ref, il faut --gff3, --mane et --fasta pour construire la référence."
+    }
+    if (!params.skip_irfinder && !params.irfinder_ref && !(params.gtf && params.fasta)) {
+        error "Sans --irfinder_ref, IRFinder a besoin de --gtf et --fasta (ou --skip_irfinder)."
+    }
+    if (params.mean_quality != null) {
+        error "--mean_quality a été renommé --qualified_quality (seuil de qualité PAR BASE de fastp) ; " +
+              "pour filtrer sur la qualité moyenne du read, utiliser --average_qual."
+    }
+    if (!(params.irfinder_ir_file in ['nondir', 'dir'])) {
+        error "--irfinder_ir_file doit valoir 'nondir' ou 'dir'."
+    }
+}
 
-//         path { record ->
-//             record.trimmed_r1        >> "fastq_trimmed/${record.group_id}/${record.trimmed_r1.name}"
-//             record.trimmed_r2        >> "fastq_trimmed/${record.group_id}/${record.trimmed_r2.name}"
-//             record.fastp_html        >> "qc/fastp/${record.group_id}/${record.fastp_html.name}"
-//             record.fastp_json        >> "qc/fastp/${record.group_id}/${record.fastp_json.name}"
-//             record.fastqc_raw_html1  >> "qc/fastqc_raw/${record.group_id}/${record.fastqc_raw_html1.name}"
-//             record.fastqc_raw_html2  >> "qc/fastqc_raw/${record.group_id}/${record.fastqc_raw_html2.name}"
-//             record.fastqc_raw_zip1   >> "qc/fastqc_raw/${record.group_id}/${record.fastqc_raw_zip1.name}"
-//             record.fastqc_raw_zip2   >> "qc/fastqc_raw/${record.group_id}/${record.fastqc_raw_zip2.name}"
-//             record.fastqc_trim_html1 >> "qc/fastqc_trimmed/${record.group_id}/${record.fastqc_trim_html1.name}"
-//             record.fastqc_trim_html2 >> "qc/fastqc_trimmed/${record.group_id}/${record.fastqc_trim_html2.name}"
-//             record.fastqc_trim_zip1  >> "qc/fastqc_trimmed/${record.group_id}/${record.fastqc_trim_zip1.name}"
-//             record.fastqc_trim_zip2  >> "qc/fastqc_trimmed/${record.group_id}/${record.fastqc_trim_zip2.name}"
-//         }
+/*
+ * Samplesheet TSV avec en-tête :
+ *   id  path_read1  path_read2  group_id  [technologie]  [condition]
+ * Retourne une liste de [meta, [r1, r2]] après validation complète.
+ */
+def parseSamplesheet(path) {
+    def sheet = file(path, checkIfExists: true)
+    def rows  = sheet.splitCsv(header: true, sep: '\t')
+    if (!rows) {
+        error "Samplesheet ${sheet} vide."
+    }
 
-//         index {
-//             path 'samplesheet_processed.csv'
-//             header true
-//         }
-//     }
-// }
+    def required = ['id', 'path_read1', 'path_read2', 'group_id']
+    def missing  = required.findAll { c -> !rows[0].containsKey(c) }
+    if (missing) {
+        error "Samplesheet ${sheet} : colonne(s) manquante(s) ${missing} (attendu : ${required} [+ technologie, condition])."
+    }
+
+    def samples = []
+    def errors  = []
+    rows.eachWithIndex { row, i ->
+        def line = i + 2
+        def id   = row.id?.trim()
+        if (!id || !(id ==~ /[A-Za-z0-9._-]+/)) {
+            errors << "ligne ${line} : id '${row.id}' invalide (caractères autorisés : A-Z a-z 0-9 . _ -)"
+            return
+        }
+        def reads = [row.path_read1, row.path_read2].collect { p -> p?.trim() ? file(p.trim()) : null }
+        reads.eachWithIndex { r, j ->
+            if (r == null) {
+                errors << "ligne ${line} (${id}) : path_read${j + 1} vide (le pipeline est paired-end)"
+            }
+            else if (!r.exists()) {
+                errors << "ligne ${line} (${id}) : ${r} introuvable"
+            }
+        }
+        def group = row.group_id?.trim()
+        if (!group || !(group ==~ /[A-Za-z0-9._-]+/)) {
+            errors << "ligne ${line} (${id}) : group_id '${row.group_id}' invalide"
+        }
+        // IRFinder Diff découpe les noms sur '_' et refuse les arguments commençant par '-' :
+        // les conditions sont restreintes aux caractères alphanumériques.
+        def condition = row.condition?.trim() ?: null
+        if (condition && !(condition ==~ /[A-Za-z0-9]+/)) {
+            errors << "ligne ${line} (${id}) : condition '${condition}' invalide (alphanumérique uniquement)"
+        }
+        samples << tuple([id: id, group: group, condition: condition, technologie: row.technologie?.trim()], reads)
+    }
+
+    def dup = samples.countBy { meta, _reads -> meta.id }.findAll { _id, n -> n > 1 }.keySet()
+    if (dup) {
+        errors << "id(s) dupliqué(s) : ${dup}"
+    }
+    if (errors) {
+        error "Samplesheet ${sheet} invalide :\n  - " + errors.join('\n  - ')
+    }
+    return samples
+}

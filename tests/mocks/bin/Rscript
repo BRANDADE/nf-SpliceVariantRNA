@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+# Mock de Rscript : n'exécute que l'expression make.names() de SPLICELAUNCHER_ANALYSIS.
+import re, sys
+expr = sys.argv[sys.argv.index("-e") + 1]
+out = re.search(r'"([^"]+\.sample_names\.txt)"', expr).group(1)
+x = [l.rstrip("\n") for l in open("raw_names.txt")]
+def make_name(s):
+    s = re.sub(r"[^A-Za-z0-9._]", ".", s)
+    if not re.match(r"^([A-Za-z]|\.(?![0-9]))", s):
+        s = "X" + s
+    return s
+y, seen = [], {}
+for s in map(make_name, x):
+    if s in seen:
+        seen[s] += 1; s = "{}.{}".format(s, seen[s])
+    else:
+        seen[s] = 0
+    y.append(s)
+with open(out, "w") as fh:
+    fh.write("input\tused\n" + "".join("{}\t{}\n".format(a, b) for a, b in zip(x, y)))
+open("sample_names.arg", "w").write("|".join(y))

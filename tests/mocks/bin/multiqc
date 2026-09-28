@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+fn=multiqc_report.html
+while [ $# -gt 0 ]; do case "$1" in --filename) fn="$2"; shift 2 ;; *) shift ;; esac; done
+touch "$fn"; mkdir -p "${fn%.html}_data"
