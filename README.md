@@ -19,12 +19,14 @@ FASTQ ─► FastQC (brut) ─► fastp ─► FastQC (trimmé) ─────�
 
 ## Prérequis
 
-- Nextflow (développé et testé avec 26.04.6).
+- Nextflow ≥ 26.04 (testé avec 26.04.6).
 - Outils sur le cluster (chemins dans `conf/slurm.config`) : fastp, FastQC, MultiQC, STAR, samtools,
   bedtools, SpliceLauncher (avec R et Perl).
-- Singularity/Apptainer pour IRFinder : le conteneur officiel `cloxd/irfinder:2.0.1` est téléchargé
-  automatiquement. Seuls les processus IRFinder tournent dans un conteneur, les autres utilisent les
-  outils de l'hôte.
+- Singularity/Apptainer pour IRFinder. Le cluster n'ayant pas accès à Docker Hub, on utilise une image
+  `.sif` locale, créée depuis une machine connectée avec
+  `singularity pull irfinder_2.0.1.sif docker://cloxd/irfinder:2.0.1`, et renseignée avec
+  `--irfinder_container /chemin/absolu/irfinder_2.0.1.sif`. Seuls les processus IRFinder tournent dans un
+  conteneur, les autres utilisent les outils de l'hôte.
 
 ## Utilisation
 
