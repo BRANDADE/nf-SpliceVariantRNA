@@ -1,0 +1,6 @@
+id	path_read1	path_read2	group_id	technologie	condition
+S1	tests/data/fastq/S1_R1.fastq.gz	tests/data/fastq/S1_R2.fastq.gz	lib1	illumina	ctrl
+S2	tests/data/fastq/S2_R1.fastq.gz	tests/data/fastq/S2_R2.fastq.gz	lib1	illumina	ctrl
+S3	tests/data/fastq/S3_R1.fastq.gz	tests/data/fastq/S3_R2.fastq.gz	lib1	illumina	ctrl
+S4	tests/data/fastq/S4_R1.fastq.gz	tests/data/fastq/S4_R2.fastq.gz	lib2	illumina	patient
+S5	tests/data/fastq/S5_R1.fastq.gz	tests/data/fastq/S5_R2.fastq.gz	lib2	illumina	patient

@@ -1,23 +1,27 @@
 process MULTIQC {
-    tag "$type"
+    tag "${run_id}"
+    label 'process_low'
 
     input:
-    path(qc_files)
-    val(type)
-    val(report_name)
+    path qc_files, stageAs: 'qc/*'
+    val run_id
 
     output:
-    path("${report_name}.html")     , emit: html
-    path("${report_name}_data")     , emit: data
-    tuple val(type), path("${report_name}.html"), path("${report_name}_data"), emit: multiqc_raw
+    path "${run_id}.multiqc.html", emit: html
+    path "${run_id}.multiqc_data", emit: data
 
     script:
-    def report_title = type == 'raw' ? 'Quality Control of raw fastq files' : 'Quality Control of trimmed fastq files'
     """
-    ${params.multiqc} \\
-        . \\
-        --filename ${report_name} \\
-        --title "${report_title}" \\
-        --dirs --dirs-depth 1
+    ${params.multiqc} qc \\
+        --force \\
+        --title "SpliceVariantRNA - ${run_id}" \\
+        --filename ${run_id}.multiqc.html \\
+        --outdir .
+    """
+
+    stub:
+    """
+    touch ${run_id}.multiqc.html
+    mkdir ${run_id}.multiqc_data
     """
 }

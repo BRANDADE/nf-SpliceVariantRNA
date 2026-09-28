@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+for a in "$@"; do
+    case "$a" in *.gz|*.fastq|*.fq)
+        b=$(basename "$a" | sed -E 's/(\.gz|\.fastq|\.fq)+$//'); touch "${b}_fastqc.html" "${b}_fastqc.zip" ;;
+    esac
+done

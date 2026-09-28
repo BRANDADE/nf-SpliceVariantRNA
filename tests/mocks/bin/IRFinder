@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Mock d'IRFinder-S (BuildRefFromSTARRef, BAM, Diff) : formats de sortie conformes au wiki."""
+import hashlib, itertools, os, sys
+
+HEADER = ("Chr Start End Name Null Strand ExcludedBases Coverage IntronDepth IntronDepth25Percentile "
+          "IntronDepth50Percentile IntronDepth75Percentile ExonToIntronReadsLeft ExonToIntronReadsRight "
+          "IntronDepthFirst50bp IntronDepthLast50bp SpliceLeft SpliceRight SpliceExact IRratio Warnings").split()
+INTRONS = [("chr1", 100, 200, "GENE1/ENSG1/clean", "+"), ("chr1", 300, 400, "GENE1/ENSG1/known-exon", "+"),
+           ("chr2", 50, 90, "GENE2/ENSG2/anti-near", "-")]
+
+
+def opts(args, with_value):
+    o, rest, i = {}, [], 0
+    while i < len(args):
+        if args[i] in with_value:
+            o[args[i]] = args[i + 1]; i += 2
+        elif args[i].startswith("-") and len(args[i]) == 2:
+            o[args[i]] = True; i += 1
+        else:
+            rest.append(args[i]); i += 1
+    return o, rest
+
+
+def buildref(args):
+    o, _ = opts(args, {"-r", "-x", "-f", "-g", "-t", "-n", "-M", "-b", "-R", "-S", "-e"})
+    for k in ("-x", "-f", "-g"):
+        assert os.path.exists(o[k]), "mock: {} {} introuvable".format(k, o[k])
+    assert os.path.isfile(os.path.join(o["-x"], "SA")), "mock: -x n'est pas un index STAR"
+    assert not os.path.exists(o["-r"]), "mock: -r ne doit pas exister"
+    os.makedirs(os.path.join(o["-r"], "IRFinder")); os.makedirs(os.path.join(o["-r"], "Mapability"))
+    for f in ("ref-cover.bed", "ref-sj.ref", "ref-read-continues.ref", "introns.unique.bed", "ref-ROI.bed"):
+        open(os.path.join(o["-r"], "IRFinder", f), "w").write("x\n")
+    os.symlink(o["-x"], os.path.join(o["-r"], "STAR"))
+
+
+def bam(args):
+    o, rest = opts(args, {"-r", "-d", "-t", "-R", "-w", "-j"})
+    assert os.path.isfile(os.path.join(o["-r"], "IRFinder", "ref-cover.bed")), "mock: référence invalide"
+    assert len(rest) == 1 and os.path.exists(rest[0]), "mock: un BAM attendu"
+    seed = int(hashlib.md5(os.path.basename(rest[0]).encode()).hexdigest(), 16)
+    os.makedirs(os.path.join(o["-d"], "logs"), exist_ok=True)
+    with open(os.path.join(o["-d"], "IRFinder-IR-nondir.txt"), "w") as fh:
+        fh.write("\t".join(HEADER) + "\n")
+        for k, (c, s, e, n, st) in enumerate(INTRONS):
+            depth = (seed >> (4 * k)) % 20
+            sl, sr = 20 + k, 18 + (seed % 5)
+            ratio = depth / (max(sl, sr) + depth)
+            warn = "LowCover" if depth + sl < 10 else "-"
+            vals = [c, s, e, n, 0, st, 0, 1, depth, depth, depth, depth, 3, 3, depth, depth, sl, sr, min(sl, sr),
+                    round(ratio, 4), warn]
+            fh.write("\t".join(map(str, vals)) + "\n")
+    open(os.path.join(o["-d"], "WARNINGS"), "w").close()
+
+
+def diff(args):
+    groups, cur, out, i = {}, None, "./diff/", 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("-g:"):
+            cur = a[3:]; groups[cur] = []
+        elif a in ("-o", "-ir", "-wl", "-m"):
+            if a == "-o":
+                out = args[i + 1]
+            i += 1
+        elif cur is not None and not a.startswith("-"):
+            assert os.path.isfile(a), "mock: {} introuvable".format(a)
+            assert "_" not in cur, "mock: '_' interdit dans les noms de groupe"
+            groups[cur].append(a)
+        i += 1
+    assert len(groups) >= 2, "mock: au moins deux groupes"
+    os.makedirs(out, exist_ok=True)
+    samples = [(g, f) for g in groups for f in groups[g]]
+    conds = sorted(groups)  # niveaux de facteur R : ordre alphabétique
+    pairs = list(itertools.combinations(conds, 2))
+    head = ["IRratio.sample_{}".format(k + 1) for k in range(len(samples))]
+    head += ["{}.Mean.IRratio".format(c) for c in conds]
+    for a, b in pairs:
+        head += ["DESeq2.padj.{}_{}".format(a, b), "DESeq2.baseMean.{}_{}".format(a, b),
+                 "DESeq2.log2FoldChange.{}_{}".format(a, b)]
+    with open(os.path.join(out, "all_results_DESeq2.tsv"), "w") as fh:
+        fh.write("\t".join(head) + "\n")
+        for k, (c, s, e, n, st) in enumerate(INTRONS):
+            row = ["{}/{}:{}-{}:{}".format(n, c, s, e, st)] + ["0.1"] * len(samples) + ["0.1"] * len(conds)
+            for _ in pairs:
+                row += ["0.01" if k == 0 else "0.9", "30", "1.5"]
+            fh.write("\t".join(row) + "\n")
+    for a, b in pairs:
+        with open(os.path.join(out, "{}_{}_DESeq2.tsv".format(a, b)), "w") as fh:
+            fh.write("ID\tbaseMean\tlog2FoldChange\tlfcSE\tstat\tpvalue\tpadj\n")
+
+
+mode, args = sys.argv[1], sys.argv[2:]
+{"BuildRefFromSTARRef": buildref, "BAM": bam, "Diff": diff}[mode](args)
