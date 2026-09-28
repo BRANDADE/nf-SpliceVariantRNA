@@ -5,7 +5,9 @@ Pipeline Nextflow de détection d'anomalies d'épissage en RNA-seq paired-end :
 ```
 FASTQ ─► FastQC (brut) ─► fastp ─► FastQC (trimmé) ──────────────────────────► MultiQC
                              │
-                             └─► SpliceLauncher Align (STAR) ─┬─► SpliceLauncher Count ─► SpliceLauncher Analyse
+                             └─► SpliceLauncher Align (STAR) ─┬─► SpliceLauncher Count ─► SpliceLauncher Analyse (TSV)
+                                                              │     └─► filtre ─┬─► récapitulatif HGVS / échantillon
+                                                              │                 └─► sashimi plots / échantillon
                                                               └─► IRFinder-S BAM ─┬─► matrices intron × échantillon
                                                                                   ├─► chaque échantillon vs les autres (DESeq2)
                                                                                   └─► comparaison de conditions (DESeq2)
@@ -27,6 +29,9 @@ FASTQ ─► FastQC (brut) ─► fastp ─► FastQC (trimmé) ─────�
   `singularity pull irfinder_2.0.1.sif docker://cloxd/irfinder:2.0.1`, et renseignée avec
   `--irfinder_container /chemin/absolu/irfinder_2.0.1.sif`. Seuls les processus IRFinder tournent dans un
   conteneur, les autres utilisent les outils de l'hôte.
+- Une seconde image `.sif` pour le post-traitement SpliceLauncher (Python + ggsashimi), construite à
+  partir de `containers/tools/Dockerfile` (commandes en tête du fichier) et renseignée avec
+  `--tools_container /chemin/absolu/splicevariant-tools_1.0.sif`.
 
 ## Utilisation
 
@@ -93,6 +98,44 @@ binaire.
 | `--irfinder_padj` | 0.05 | seuil du tableau récapitulatif des outliers |
 | `--publish_dir_mode` | `copy` | mode de publication Nextflow |
 
+## Post-traitement SpliceLauncher
+
+SpliceLauncher est lancé avec `--txtOut` : tous les échanges se font en TSV (un rapport HTML sera
+construit dans un second temps à partir de ces fichiers). Trois scripts de `bin/` remplacent les
+anciens scripts de `scripts/` (réécrits en Python et corrigés, voir plus bas) :
+
+| étape | script | par | sorties |
+|---|---|---|---|
+| filtre | `sl_filter.py` | série | jonctions statistiques / non statistiques, globales et par échantillon, brutes et `.filter` |
+| récapitulatif | `sl_recap.py` | échantillon | `<s>.recap.tsv` : transcrit MANE, HGVS ARN, colonne `category` |
+| sashimi | `sl_sashimi.py` | échantillon | `<s>.sashimi/{aberrant,unique,event_too_complex}/<jonction>.pdf` |
+
+Le script s'appuie uniquement sur le SpliceLauncher public (`SpliceLauncherAnalyse.r`) :
+- **statistiques** : `filterInterpretation = "Aberrant junction"` (p < 0.05 pour au moins un
+  échantillon), hors `Physio`/`NoData`. Niveaux : `*` p < 0.05, `**` p < 0.01, `***` p < 0.001 ;
+- **non statistiques** : `"Unique junction"` (hors `Physio`/`NoData`) et `AnnotJuncs = "Event too complex"`.
+  SpliceLauncher ne fait pas d'analyse statistique sous 5 échantillons : seuls les « Event too complex »
+  restent alors.
+
+Les seuils dépendent de la série. Ils sont regroupés dans `conf/postprocess.config` et se surchargent
+sans modifier le dépôt, avec `-params-file mes_filtres.yaml` ou en ligne de commande :
+
+| paramètre | défaut | rôle |
+|---|---|---|
+| `sl_min_non_statistical_reads` | 1 | lectures minimales de l'échantillon (non statistiques) |
+| `sl_max_non_statistical_samples` | -1 | `.filter` : nb max d'échantillons portant la jonction (-1 = aucun) |
+| `sl_max_statistical_samples` | -1 | `.filter` : nb max d'échantillons significatifs (-1 = aucun) |
+| `sl_threshold_significance_level` | 0 | `.filter` : niveau minimal (0 = tous, 1 = `*`, 2 = `**`, 3 = `***`) |
+| `sashimi_extend_bp` | 50 | élargissement de la fenêtre (× 1 à 6 si ggsashimi échoue) |
+| `sashimi_min_reads` | -1 | `-M` de ggsashimi (-1 = moitié des lectures de l'échantillon) |
+| `sashimi_nb_controls` / `sashimi_seed` | 4 / 1 | BAM témoins tirés au hasard, tirage reproductible |
+
+**HGVS : à valider.** La logique de l'ancien `recap_file.r` est conservée. Une délétion donne
+`r.<cStart>_<cEnd>del`. Une insertion donne `r.<cStart>_<cEnd>ins<séquence>`, où la séquence est le
+FASTA entre `start` et `end` de la jonction. Seule la casse a été corrigée : les séquences ARN sont
+écrites en minuscules avec `u` (recommandations HGVS pour l'ARN). Pour un 3AS/5AS, la séquence extraite
+couvre toute la jonction et non les seuls nucléotides insérés : elle devra être validée sur des cas connus.
+
 ## Sorties
 
 ```
@@ -102,6 +145,8 @@ binaire.
 ├── qc/{fastqc_raw,fastqc_trimmed,fastp}/<group>/   qc/multiqc/
 ├── splicelauncher/mapping/<group>/                 BAM, BAI, SJ.out.tab, Log.final.out
 ├── splicelauncher/<run_id>/{count_matrix,sample_counts,analysis_results}/
+├── splicelauncher/<run_id>/filtered/<run_id>.{statistical,non_statistical}_junctions.tsv
+├── splicelauncher/<run_id>/filtered/samples/<s>/   filtres, <s>.recap.tsv, <s>.sashimi/
 ├── irfinder/samples/<group>/<id>/                  sorties IRFinder brutes (IRFinder-IR-*.txt, WARNINGS…)
 ├── irfinder/<run_id>/matrices/                     IRratio, IntronDepth, SpliceMax, SpliceExact, Warnings
 ├── irfinder/<run_id>/outliers/outlier_<id>/        IRFinder Diff : <id> contre les autres échantillons
@@ -132,9 +177,11 @@ nextflow run main.nf -profile test -stub-run
 # vrais blocs script: avec des outils simulés (voir tests/mocks/README.md) :
 PATH="$PWD/tests/mocks/bin:$PATH" nextflow run main.nf -profile test \
     --splicelauncher tests/mocks/SpliceLauncher/SpliceLauncher.sh
+# scripts de bin/ (pandas, pysam) :
+python -m unittest discover -s tests/python -v
 ```
 
-Ces trois tests tournent en intégration continue (`.github/workflows/ci.yml`).
+Ces quatre tests tournent en intégration continue (`.github/workflows/ci.yml`).
 
 ## Changements par rapport à la version 0.1 (incompatibles)
 
@@ -151,5 +198,21 @@ Ces trois tests tournent en intégration continue (`.github/workflows/ci.yml`).
   une copie locale (`SpliceLauncher.sh -C`).
 - Les chemins propres au cluster sont regroupés dans le profil `slurm`.
 
-Les scripts de `scripts/` (`recap_file.r`, `SpliceLauncher_filter_analyse.r`,
-`generate_sashimi_plot.py`) ne sont pas appelés par le pipeline.
+- SpliceLauncher Analyse produit uniquement du TSV (`--txtOut`) ; le paramètre `--txt_out` disparaît.
+- Les scripts de `scripts/` sont remplacés par `bin/sl_filter.py`, `bin/sl_recap.py` et
+  `bin/sl_sashimi.py`, intégrés au pipeline. Leurs sorties sont en TSV, et le récapitulatif tient en un
+  seul fichier avec une colonne `category` au lieu d'onglets Excel. Corrections apportées :
+  - `S1` ne récupère plus les jonctions significatives de `S10` : les noms d'échantillons sont comparés
+    exactement, au lieu d'une recherche de sous-chaîne interprétée comme expression régulière ;
+  - le script ne plante plus quand une p-value vaut exactement 0.01 ou 0.001, ni quand un paramètre
+    est absent ;
+  - les résultats sont écrits en une seule fois, au lieu de réécrire le classeur Excel à chaque ligne ;
+  - le seuil `-M` de ggsashimi est conservé pendant les tentatives d'élargissement de la fenêtre ;
+  - le nom d'échantillon est passé explicitement, au lieu d'être déduit du nom du BAM ;
+  - le tirage des BAM témoins est reproductible ;
+  - le GTF n'est lu qu'une fois ;
+  - ggsashimi est appelé sans passer par le shell ;
+  - un transcrit sans numéro d'exon ne fait plus planter le script ;
+  - plus aucune installation de paquet R à l'exécution ;
+  - les valeurs `No model` et `Percentage threshold execeeded`, absentes du SpliceLauncher public, ne
+    sont plus prises en compte.
