@@ -171,17 +171,20 @@ process SPLICELAUNCHER_ANALYSIS {
     val run_id
 
     output:
-    path "${run_id}_results"                    , emit: results
-    path "${run_id}.sample_names.txt"           , emit: sample_names
-    path "${run_id}.splicelauncher_analysis.log", emit: log
+    path "analysis"                                                  , emit: results
+    path "analysis/${run_id}_results/${run_id}_outputSpliceLauncher.txt", emit: table
+    path "${run_id}.sample_names.txt"                                , emit: sample_names
+    path "${run_id}.splicelauncher_analysis.log"                     , emit: log
 
     script:
+    // Sortie texte (--txtOut) uniquement : tout le post-traitement travaille en TSV.
     def graphics_opt = params.graphics ? '--Graphics' : ''
-    def txt_opt      = params.txt_out  ? '--txtOut'   : ''
     def bed_opt      = params.bed_out  ? '--bedOut'   : ''
     // Les noms d'échantillons sont réutilisés comme noms de colonnes de data.frame par
     // SpliceLauncherAnalyse.r : on applique donc exactement make.names() de R (préfixe X,
     // caractères invalides -> '.') plutôt qu'une ré-implémentation partielle en bash.
+    // SpliceLauncherAnalyse.r nomme ses sorties d'après le fichier d'entrée (<run>_outputSpliceLauncher.txt
+    // dans <sortie>/<run>_results/) : copie (et non lien, résolu par readlink -f) en <run_id>.txt.
     """
     ${slConfig()}
 
@@ -191,26 +194,39 @@ process SPLICELAUNCHER_ANALYSIS {
     RSCRIPT=\$(bash -c 'source sl_config.cfg && echo "\$Rscript"')
     "\$RSCRIPT" -e 'x <- readLines("raw_names.txt"); y <- make.names(x, unique = TRUE); write.table(data.frame(input = x, used = y), "${run_id}.sample_names.txt", sep = "\\t", quote = FALSE, row.names = FALSE); cat(paste(y, collapse = "|"), file = "sample_names.arg")'
 
+    cp ${count_matrix} ${run_id}.txt
     bash ${slBin()} -C sl_config.cfg --runMode SpliceLauncher \\
-        -I ${count_matrix} \\
-        -O ${run_id}_results \\
+        -I ${run_id}.txt \\
+        -O analysis \\
         -R ${ref_dir}/SpliceLauncherAnnot.txt \\
         --SampleNames "\$(cat sample_names.arg)" \\
         --min_cov ${params.min_cov} \\
         --threshold ${params.threshold} \\
-        ${graphics_opt} ${txt_opt} ${bed_opt} \\
+        --txtOut \\
+        ${graphics_opt} ${bed_opt} \\
         > ${run_id}.splicelauncher_analysis.log 2>&1
 
     # SpliceLauncher.sh sort avec le code 0 même quand il abandonne : on vérifie la sortie.
-    if [ -z "\$(ls -A ${run_id}_results 2>/dev/null)" ]; then
-        echo "ERREUR : aucun résultat SpliceLauncher, voir ${run_id}.splicelauncher_analysis.log" >&2
+    if [ ! -s analysis/${run_id}_results/${run_id}_outputSpliceLauncher.txt ]; then
+        echo "ERREUR : pas de sortie SpliceLauncher, voir ${run_id}.splicelauncher_analysis.log" >&2
         exit 1
     fi
+    rm ${run_id}.txt
     """
 
     stub:
     """
-    mkdir ${run_id}_results
-    touch ${run_id}.sample_names.txt ${run_id}.splicelauncher_analysis.log
+    mkdir -p analysis/${run_id}_results
+    printf 'Conca\\tchr\\tstart\\tend\\tstrand\\tStrand_transcript\\tNM\\tGene' > analysis/${run_id}_results/${run_id}_outputSpliceLauncher.txt
+    printf 'input\\tused\\n' > ${run_id}.sample_names.txt
+    for s in \$(head -n1 ${count_matrix} | cut -f6- | tr '\\t' '\\n' | sed -E 's/(\\.Aligned\\.sortedByCoord\\.out)?\\.count\$//'); do
+        printf '\\t%s' "\$s" >> analysis/${run_id}_results/${run_id}_outputSpliceLauncher.txt
+        printf '%s\\t%s\\n' "\$s" "\$s" >> ${run_id}.sample_names.txt
+    done
+    for s in \$(cut -f2 ${run_id}.sample_names.txt | tail -n +2); do
+        printf '\\tP_%s' "\$s" >> analysis/${run_id}_results/${run_id}_outputSpliceLauncher.txt
+    done
+    echo >> analysis/${run_id}_results/${run_id}_outputSpliceLauncher.txt
+    touch ${run_id}.splicelauncher_analysis.log
     """
 }

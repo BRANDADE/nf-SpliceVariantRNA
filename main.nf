@@ -10,6 +10,7 @@ include { FASTQC as FASTQC_RAW; FASTQC as FASTQC_TRIMMED }                      
 include { FASTP }                                                                               from './modules/fastp.nf'
 include { MULTIQC }                                                                             from './modules/multiqc.nf'
 include { SPLICELAUNCHER_INSTALL; SPLICELAUNCHER_ALIGN; SPLICELAUNCHER_COUNT; SPLICELAUNCHER_ANALYSIS } from './modules/splicelauncher.nf'
+include { SL_FILTER; FASTA_FAIDX; SL_RECAP; SL_SASHIMI }                                     from './modules/sl_postprocess.nf'
 include { IRFINDER }                                                                            from './subworkflows/irfinder.nf'
 
 workflow {
@@ -69,14 +70,57 @@ workflow {
     SPLICELAUNCHER_ANALYSIS(SPLICELAUNCHER_COUNT.out.count_matrix, ch_sl_ref, run_id)
 
     // =============================================================
-    // 5. IRFINDER : rétention d'intron
+    // 5. POST-TRAITEMENT SPLICELAUNCHER : filtre, récapitulatif HGVS, sashimi plots
+    // =============================================================
+    if (!params.skip_sl_postprocess) {
+        SL_FILTER(SPLICELAUNCHER_ANALYSIS.out.table, run_id)
+
+        // Nom d'échantillon utilisé par SpliceLauncher (make.names) <-> id du samplesheet
+        ch_sl_names = SPLICELAUNCHER_ANALYSIS.out.sample_names
+            .splitCsv(header: true, sep: '\t')
+            .map { row -> tuple(row.input, row.used) }
+        ch_bam_named = SPLICELAUNCHER_ALIGN.out.bam
+            .map { meta, bam, bai -> tuple(meta.id, meta, bam, bai) }
+            .join(ch_sl_names, failOnMismatch: true)
+            .map { _id, meta, bam, bai, sl_name -> tuple(sl_name, meta, bam, bai) }
+        ch_sample_dirs = SL_FILTER.out.sample_dirs
+            .flatten()
+            .map { dir -> tuple(dir.name, dir) }
+        ch_per_sample = ch_bam_named
+            .join(ch_sample_dirs, failOnMismatch: true)   // [sl_name, meta, bam, bai, dir]
+
+        ch_fasta_fai = file("${params.fasta}.fai").exists()
+            ? channel.value(tuple(file(params.fasta), file("${params.fasta}.fai")))
+            : FASTA_FAIDX(file(params.fasta, checkIfExists: true)).fasta_fai
+
+        SL_RECAP(
+            ch_per_sample.map { sl_name, meta, _bam, _bai, dir -> tuple(meta, sl_name, dir) },
+            ch_fasta_fai,
+            file(params.mane, checkIfExists: true),
+            run_id
+        )
+
+        if (!params.skip_sashimi) {
+            ch_controls = ch_bam_named.toList()
+            SL_SASHIMI(
+                ch_per_sample.map { sl_name, meta, bam, bai, dir -> tuple(meta, sl_name, dir, bam, bai) },
+                ch_controls.map { rows -> rows.collectMany { _n, _m, bam, bai -> [bam, bai] } },
+                ch_controls.map { rows -> rows.collect { n, _m, bam, _bai -> "${n}=${bam.name}" } },
+                file(params.gtf, checkIfExists: true),
+                run_id
+            )
+        }
+    }
+
+    // =============================================================
+    // 6. IRFINDER : rétention d'intron
     // =============================================================
     if (!params.skip_irfinder) {
         IRFINDER(SPLICELAUNCHER_ALIGN.out.bam, ch_sl_ref, run_id)
     }
 
     // =============================================================
-    // 6. MULTIQC
+    // 7. MULTIQC
     // =============================================================
     if (!params.skip_multiqc) {
         ch_qc = channel.empty()
@@ -104,6 +148,9 @@ def validateParams() {
     file(params.splicelauncher, checkIfExists: true)
     if (!params.splicelauncher_ref && !(params.gff3 && params.mane && params.fasta)) {
         error "Sans --splicelauncher_ref, il faut --gff3, --mane et --fasta pour construire la référence."
+    }
+    if (!params.skip_sl_postprocess && !(params.fasta && params.mane && (params.gtf || params.skip_sashimi))) {
+        error "Le post-traitement SpliceLauncher a besoin de --fasta, --mane et --gtf (ou --skip_sl_postprocess / --skip_sashimi)."
     }
     if (!params.skip_irfinder && !params.irfinder_ref && !(params.gtf && params.fasta)) {
         error "Sans --irfinder_ref, IRFinder a besoin de --gtf et --fasta (ou --skip_irfinder)."

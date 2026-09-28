@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$1" = index ] && touch "${@: -1}.bai"
+case "$1" in
+    index) touch "${@: -1}.bai" ;;
+    faidx) python3 -c 'import pysam, sys; pysam.faidx(sys.argv[1])' "$2" ;;
+esac

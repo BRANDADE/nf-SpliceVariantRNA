@@ -1,1 +1,6 @@
-chr1	HAVANA	exon	1	4	.	+	.	gene_id "G1"; transcript_id "T1"; gene_type "protein_coding"; transcript_type "protein_coding"; gene_name "GENE1";
+chr1	HAVANA	gene	100	1900	.	+	.	gene_id "ENSG1"; gene_type "protein_coding"; gene_name "GENE1";
+chr1	HAVANA	transcript	100	1900	.	+	.	gene_id "ENSG1"; transcript_id "ENST0001.1"; gene_type "protein_coding"; transcript_type "protein_coding"; gene_name "GENE1";
+chr1	HAVANA	exon	100	300	.	+	.	gene_id "ENSG1"; transcript_id "ENST0001.1"; gene_type "protein_coding"; transcript_type "protein_coding"; gene_name "GENE1"; exon_number 1;
+chr1	HAVANA	exon	600	700	.	+	.	gene_id "ENSG1"; transcript_id "ENST0001.1"; gene_type "protein_coding"; transcript_type "protein_coding"; gene_name "GENE1"; exon_number 2;
+chr1	HAVANA	exon	1000	1100	.	+	.	gene_id "ENSG1"; transcript_id "ENST0001.1"; gene_type "protein_coding"; transcript_type "protein_coding"; gene_name "GENE1"; exon_number 3;
+chr1	HAVANA	exon	1500	1900	.	+	.	gene_id "ENSG1"; transcript_id "ENST0001.1"; gene_type "protein_coding"; transcript_type "protein_coding"; gene_name "GENE1"; exon_number 4;

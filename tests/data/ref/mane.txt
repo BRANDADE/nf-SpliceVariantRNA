@@ -1,1 +1,2 @@
-placeholder
+#Download from https://ftp.ncbi.nlm.nih.gov/refseq/MANE/
+GENE1	NM_000001.1	ENST0001.1	+
