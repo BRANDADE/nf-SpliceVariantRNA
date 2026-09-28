@@ -80,7 +80,39 @@ process IRFINDER_BUILDREF {
     """
 }
 
-process IRFINDER_QUANT {
+// Vérifications communes après IRFinder BAM / FastQ.
+def irfinderCheck(id) {
+    def f = "${id}/IRFinder-IR-${params.irfinder_ir_file}.txt"
+    return """
+    if [ ! -s ${f} ]; then
+        echo "ERREUR : ${f} absent." >&2
+        echo "         IRFinder ne produit IRFinder-IR-dir.txt que pour les librairies orientées." >&2
+        echo "         Utiliser --irfinder_ir_file nondir pour une librairie non orientée." >&2
+        exit 1
+    fi
+    # Des noms de chromosomes différents entre lectures et référence ('chr1' vs '1') ne font pas
+    # échouer IRFinder : tous les comptages sont nuls (wiki IRFinder, Troubleshoot, Issue 3).
+    if ! awk -F'\\t' 'NR > 1 && (\$9 + \$19) > 0 { found = 1; exit } END { exit !found }' ${f}; then
+        echo "ERREUR : aucune lecture comptée dans ${f}." >&2
+        echo "         Vérifier que les chromosomes des lectures et de la référence IRFinder ont les mêmes noms." >&2
+        exit 1
+    fi
+    cp ${f} ${id}.IRFinder-IR-${params.irfinder_ir_file}.txt
+    """.stripIndent()
+}
+
+def irfinderStub(id) {
+    def f = "${id}.IRFinder-IR-${params.irfinder_ir_file}.txt"
+    return """
+    mkdir ${id}
+    printf 'Chr\\tStart\\tEnd\\tName\\tNull\\tStrand\\tExcludedBases\\tCoverage\\tIntronDepth\\tIntronDepth25Percentile\\tIntronDepth50Percentile\\tIntronDepth75Percentile\\tExonToIntronReadsLeft\\tExonToIntronReadsRight\\tIntronDepthFirst50bp\\tIntronDepthLast50bp\\tSpliceLeft\\tSpliceRight\\tSpliceExact\\tIRratio\\tWarnings\\n' > ${f}
+    printf 'chr1\\t100\\t200\\tGENE1/ENSG1/clean\\t0\\t+\\t0\\t1\\t5\\t4\\t5\\t6\\t3\\t3\\t5\\t5\\t20\\t22\\t20\\t0.185\\t-\\n' >> ${f}
+    cp ${f} ${id}/IRFinder-IR-${params.irfinder_ir_file}.txt
+    """.stripIndent()
+}
+
+// Mode BAM (défaut) : quantification sur les BAM SpliceLauncher (même alignement pour toutes les analyses).
+process IRFINDER_QUANT_BAM {
     tag "${meta.id}"
     label 'irfinder'
     label 'process_irfinder_quant'
@@ -101,28 +133,51 @@ process IRFINDER_QUANT {
         -t ${task.cpus} \\
         -R ${params.irfinder_cnn_min_ir} \\
         ${bam}
-
-    if [ ! -s ${meta.id}/IRFinder-IR-${params.irfinder_ir_file}.txt ]; then
-        echo "ERREUR : ${meta.id}/IRFinder-IR-${params.irfinder_ir_file}.txt absent." >&2
-        echo "         IRFinder ne produit IRFinder-IR-dir.txt que pour les librairies orientées." >&2
-        echo "         Utiliser --irfinder_ir_file nondir pour une librairie non orientée." >&2
-        exit 1
-    fi
-    cp ${meta.id}/IRFinder-IR-${params.irfinder_ir_file}.txt ${meta.id}.IRFinder-IR-${params.irfinder_ir_file}.txt
+    ${irfinderCheck(meta.id)}
     """
 
     stub:
+    irfinderStub(meta.id)
+}
+
+// Mode FastQ : IRFinder réaligne les FASTQ bruts avec son propre STAR (--outFilterMultimapNmax 1)
+// et coupe lui-même l'adaptateur Illumina (défaut de -a). Nécessite une référence construite par
+// IRFinder BuildRef, qui contient l'index STAR (<ref>/STAR).
+process IRFINDER_QUANT_FASTQ {
+    tag "${meta.id}"
+    label 'irfinder'
+    label 'process_irfinder_fastq'
+
+    input:
+    tuple val(meta), path(reads)
+    path irf_ref
+
+    output:
+    tuple val(meta), path("${meta.id}.IRFinder-IR-${params.irfinder_ir_file}.txt"), emit: ir
+    tuple val(meta), path("${meta.id}")                                           , emit: dir
+
+    script:
+    // -u : BAM produit non trié ; il est supprimé sauf --irfinder_keep_bam.
+    def rm_bam = params.irfinder_keep_bam ? '' : "rm -f ${meta.id}/Unsorted.bam"
     """
-    mkdir ${meta.id}
-    printf 'Chr\\tStart\\tEnd\\tName\\tNull\\tStrand\\tExcludedBases\\tCoverage\\tIntronDepth\\tIntronDepth25Percentile\\tIntronDepth50Percentile\\tIntronDepth75Percentile\\tExonToIntronReadsLeft\\tExonToIntronReadsRight\\tIntronDepthFirst50bp\\tIntronDepthLast50bp\\tSpliceLeft\\tSpliceRight\\tSpliceExact\\tIRratio\\tWarnings\\n' > ${meta.id}.IRFinder-IR-${params.irfinder_ir_file}.txt
-    printf 'chr1\\t100\\t200\\tGENE1/ENSG1/clean\\t0\\t+\\t0\\t1\\t5\\t4\\t5\\t6\\t3\\t3\\t5\\t5\\t20\\t22\\t20\\t0.185\\t-\\n' >> ${meta.id}.IRFinder-IR-${params.irfinder_ir_file}.txt
-    cp ${meta.id}.IRFinder-IR-${params.irfinder_ir_file}.txt ${meta.id}/IRFinder-IR-${params.irfinder_ir_file}.txt
+    IRFinder FastQ \\
+        -r ${irf_ref} \\
+        -d ${meta.id} \\
+        -t ${task.cpus} \\
+        -u \\
+        -R ${params.irfinder_cnn_min_ir} \\
+        ${reads[0]} ${reads[1]}
+    ${rm_bam}
+    ${irfinderCheck(meta.id)}
     """
+
+    stub:
+    irfinderStub(meta.id)
 }
 
 process IRFINDER_MERGE {
     tag "${run_id}"
-    label 'irfinder'
+    label 'tools'
     label 'process_single'
 
     input:
@@ -192,7 +247,7 @@ process IRFINDER_DIFF {
 
 process IRFINDER_OUTLIER_SUMMARY {
     tag "${run_id}"
-    label 'irfinder'
+    label 'tools'
     label 'process_single'
 
     input:

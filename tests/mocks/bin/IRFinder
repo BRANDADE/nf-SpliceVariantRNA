@@ -52,6 +52,14 @@ def bam(args):
     open(os.path.join(o["-d"], "WARNINGS"), "w").close()
 
 
+def fastq(args):
+    o, rest = opts(args, {"-r", "-d", "-t", "-R", "-w", "-a", "-M", "-s", "-S", "-y"})
+    assert os.path.isfile(os.path.join(o["-r"], "STAR", "SA")), "mock: la référence n'a pas d'index STAR"
+    assert len(rest) == 2 and all(os.path.exists(f) for f in rest), "mock: deux FASTQ attendus"
+    bam(["-r", o["-r"], "-d", o["-d"], rest[0]])
+    open(os.path.join(o["-d"], "Unsorted.bam"), "w").close()
+
+
 def diff(args):
     groups, cur, out, i = {}, None, "./diff/", 0
     while i < len(args):
@@ -90,4 +98,4 @@ def diff(args):
 
 
 mode, args = sys.argv[1], sys.argv[2:]
-{"BuildRefFromSTARRef": buildref, "BAM": bam, "Diff": diff}[mode](args)
+{"BuildRefFromSTARRef": buildref, "BAM": bam, "FastQ": fastq, "Diff": diff}[mode](args)

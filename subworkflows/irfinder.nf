@@ -1,10 +1,12 @@
-include { IRFINDER_BUILDREF; IRFINDER_QUANT; IRFINDER_MERGE; IRFINDER_OUTLIER_SUMMARY } from '../modules/irfinder.nf'
+include { IRFINDER_BUILDREF; IRFINDER_QUANT_BAM; IRFINDER_QUANT_FASTQ; IRFINDER_MERGE; IRFINDER_OUTLIER_SUMMARY } from '../modules/irfinder.nf'
 include { IRFINDER_DIFF as IRFINDER_DIFF_OUTLIER; IRFINDER_DIFF as IRFINDER_DIFF_CONDITIONS } from '../modules/irfinder.nf'
 
 /*
- * Rétention d'intron avec IRFinder-S, à partir des BAM déjà alignés par SpliceLauncher (STAR).
- * Le wiki IRFinder recommande le mode BAM quand les lectures ont déjà été alignées avec STAR,
- * pour que toutes les analyses reposent sur le même alignement.
+ * Rétention d'intron avec IRFinder-S. Deux modes (--irfinder_mode) :
+ *   bam   (défaut) : BAM déjà alignés par SpliceLauncher. Le wiki IRFinder recommande ce mode quand
+ *                   les lectures ont déjà été alignées avec STAR (même alignement pour toutes les analyses).
+ *   fastq          : FASTQ bruts réalignés par IRFinder (son STAR, lectures à alignement unique) ;
+ *                   nécessite --irfinder_ref construite par IRFinder BuildRef (avec STAR/).
  *
  *   (a) quantification par échantillon + matrices intron x échantillon ;
  *   (b) chaque échantillon contre tous les autres (DESeq2, IRFinder Diff) ;
@@ -13,6 +15,7 @@ include { IRFINDER_DIFF as IRFINDER_DIFF_OUTLIER; IRFINDER_DIFF as IRFINDER_DIFF
 workflow IRFINDER {
     take:
     ch_bam      // [meta, bam, bai]
+    ch_reads    // [meta, [r1, r2]] FASTQ bruts (mode fastq)
     ch_sl_ref   // référence SpliceLauncher (contient STARgenome/)
     run_id
 
@@ -36,8 +39,14 @@ workflow IRFINDER {
     }
 
     // ---------------------------------------------------------------- (a) quantification
-    IRFINDER_QUANT(ch_bam, ch_irf_ref)
-    ch_ir = IRFINDER_QUANT.out.ir
+    if (params.irfinder_mode == 'fastq') {
+        IRFINDER_QUANT_FASTQ(ch_reads, ch_irf_ref)
+        ch_ir = IRFINDER_QUANT_FASTQ.out.ir
+    }
+    else {
+        IRFINDER_QUANT_BAM(ch_bam, ch_irf_ref)
+        ch_ir = IRFINDER_QUANT_BAM.out.ir
+    }
 
     IRFINDER_MERGE(ch_ir.map { _meta, ir -> ir }.collect(), run_id)
 

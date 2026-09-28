@@ -116,7 +116,7 @@ workflow {
     // 6. IRFINDER : rétention d'intron
     // =============================================================
     if (!params.skip_irfinder) {
-        IRFINDER(SPLICELAUNCHER_ALIGN.out.bam, ch_sl_ref, run_id)
+        IRFINDER(SPLICELAUNCHER_ALIGN.out.bam, ch_samples, ch_sl_ref, run_id)
     }
 
     // =============================================================
@@ -158,6 +158,13 @@ def validateParams() {
     if (params.mean_quality != null) {
         error "--mean_quality a été renommé --qualified_quality (seuil de qualité PAR BASE de fastp) ; " +
               "pour filtrer sur la qualité moyenne du read, utiliser --average_qual."
+    }
+    if (!(params.irfinder_mode in ['bam', 'fastq'])) {
+        error "--irfinder_mode doit valoir 'bam' ou 'fastq'."
+    }
+    if (!params.skip_irfinder && params.irfinder_mode == 'fastq'
+        && !(params.irfinder_ref && file("${params.irfinder_ref}/STAR/SA").exists())) {
+        error "--irfinder_mode fastq nécessite --irfinder_ref construite par IRFinder BuildRef (avec l'index STAR/)."
     }
     if (!(params.irfinder_ir_file in ['nondir', 'dir'])) {
         error "--irfinder_ir_file doit valoir 'nondir' ou 'dir'."
